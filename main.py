@@ -10,6 +10,7 @@ import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import re
+import json
 from urllib.parse import urlencode, parse_qs, urlparse
 from telegram import Update, InputMediaPhoto
 from telegram.ext import (
@@ -47,6 +48,14 @@ logger.info(f"  YOURLS_SIGNATURE: {YOURLS_SIGNATURE}")
 logger.info(f"  AFFILIATE_TAG: {AFFILIATE_TAG}")
 logger.info(f"  PORT: {PORT}")
 
+# User agents to try
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+]
+
 # ============================================================================
 # Health Check HTTP Server (Required by Render)
 # ============================================================================
@@ -78,15 +87,17 @@ def start_health_check_server():
 async def resolve_short_url(url: str) -> str:
     """Resolve shortened URLs (amzn.eu, etc) to full Amazon URL"""
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.head(url, headers=headers, follow_redirects=True)
-            resolved_url = str(response.url)
-            logger.info(f"Resolved {url} to {resolved_url}")
-            return resolved_url
+        for user_agent in USER_AGENTS:
+            headers = {'User-Agent': user_agent}
+            try:
+                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                    response = await client.head(url, headers=headers, follow_redirects=True)
+                    resolved_url = str(response.url)
+                    logger.info(f"Resolved {url} to {resolved_url}")
+                    return resolved_url
+            except:
+                continue
+        return url
     except Exception as e:
         logger.error(f"Error resolving short URL: {e}")
         return url
@@ -118,101 +129,75 @@ def normalize_amazon_url(url: str) -> str:
 # ============================================================================
 
 async def get_amazon_product_info(url: str) -> dict:
-    """Scrape Amazon product information"""
+    """Scrape Amazon product information with multiple strategies"""
     try:
         # Normalize URL first
         normalized_url = normalize_amazon_url(url)
         
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+        logger.info(f"Scraping from: {normalized_url}")
         
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            response = await client.get(normalized_url, headers=headers)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Extract title - try multiple selectors
-            title = None
-            title_selectors = [
-                {'id': 'productTitle'},
-                {'class': 'a-size-large'},
-                {'class': 'product-title'}
-            ]
-            
-            for selector in title_selectors:
-                title_elem = soup.find('span', selector)
-                if title_elem:
-                    title = title_elem.get_text(strip=True)
-                    break
-            
-            # Extract price - try multiple selectors
-            price = None
-            price_selectors = [
-                {'class': 'a-price-whole'},
-                {'class': 'a-price-fraction'},
-                {'id': 'priceblock_dealprice'},
-                {'id': 'priceblock_ourprice'}
-            ]
-            
-            for selector in price_selectors:
-                price_elem = soup.find('span', selector)
-                if price_elem:
-                    price = price_elem.get_text(strip=True)
-                    break
-            
-            # Extract rating - try multiple selectors
-            rating = None
-            rating_elem = soup.find('span', {'class': 'a-star-small'})
-            if rating_elem:
-                rating_text = rating_elem.find('span', {'class': 'a-icon-star-small'})
-                if rating_text:
-                    rating = rating_text.get_text(strip=True).split()[0]
-            
-            if not rating:
-                rating_elem = soup.find('i', {'class': 'a-icon-star-small'})
-                if rating_elem:
-                    rating = rating_elem.get_text(strip=True).split()[0]
-            
-            # Extract number of reviews
-            reviews_count = None
-            reviews_elem = soup.find('span', {'id': 'acrCustomerReviewText'})
-            if reviews_elem:
-                reviews_count = reviews_elem.get_text(strip=True)
-            
-            # Extract image
-            image_url = None
-            img_elem = soup.find('img', {'id': 'landingImage'})
-            if img_elem:
-                image_url = img_elem.get('src')
-            
-            if not image_url:
-                img_elem = soup.find('img', {'id': 'imageBlockContainer'})
-                if img_elem:
-                    image_url = img_elem.get('src')
-            
-            # Extract description (first few lines from product description)
-            description = None
-            desc_elem = soup.find('div', {'id': 'feature-bullets'})
-            if desc_elem:
-                features = desc_elem.find_all('li')
-                if features:
-                    description = features[0].get_text(strip=True)
-                    # Limit to 100 characters
-                    if len(description) > 100:
-                        description = description[:97] + "..."
-            
-            logger.info(f"Scraped - Title: {title}, Price: {price}, Rating: {rating}")
-            
-            return {
-                'title': title or 'Prodotto Amazon',
-                'price': price,
-                'rating': rating,
-                'reviews': reviews_count,
-                'image': image_url,
-                'description': description or 'Scopri il prodotto su Amazon'
-            }
+        for user_agent in USER_AGENTS:
+            try:
+                headers = {
+                    'User-Agent': user_agent,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1'
+                }
+                
+                async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                    response = await client.get(normalized_url, headers=headers)
+                    
+                    if response.status_code != 200:
+                        logger.warning(f"Got status {response.status_code}, trying next user agent")
+                        continue
+                    
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    
+                    # Extract title - try multiple selectors
+                    title = extract_title(soup)
+                    
+                    # Extract price
+                    price = extract_price(soup)
+                    
+                    # Extract rating and reviews
+                    rating, reviews_count = extract_rating(soup)
+                    
+                    # Extract image
+                    image_url = extract_image(soup)
+                    
+                    # Extract description
+                    description = extract_description(soup)
+                    
+                    logger.info(f"Scraped - Title: {title}, Price: {price}, Rating: {rating}")
+                    
+                    # If we got at least title and image, success!
+                    if title and title != 'Prodotto Amazon':
+                        return {
+                            'title': title,
+                            'price': price,
+                            'rating': rating,
+                            'reviews': reviews_count,
+                            'image': image_url,
+                            'description': description or 'Scopri il prodotto su Amazon'
+                        }
+                    
+            except Exception as e:
+                logger.warning(f"Error with user agent, trying next: {e}")
+                continue
+        
+        # If all strategies fail, return default
+        logger.warning(f"Could not scrape product info from {normalized_url}")
+        return {
+            'title': 'Prodotto Amazon',
+            'price': None,
+            'rating': None,
+            'reviews': None,
+            'image': None,
+            'description': 'Scopri il prodotto su Amazon'
+        }
     
     except Exception as e:
         logger.error(f"Error scraping Amazon product: {e}")
@@ -224,6 +209,112 @@ async def get_amazon_product_info(url: str) -> dict:
             'image': None,
             'description': 'Scopri il prodotto su Amazon'
         }
+
+def extract_title(soup) -> str:
+    """Extract product title with multiple selectors"""
+    title_selectors = [
+        ('span', {'id': 'productTitle'}),
+        ('h1', {'class': 'a-size-large'}),
+        ('span', {'class': 'a-size-large'}),
+        ('h1', None),
+    ]
+    
+    for tag, selector in title_selectors:
+        if selector:
+            elem = soup.find(tag, selector)
+        else:
+            elem = soup.find(tag)
+        
+        if elem:
+            title = elem.get_text(strip=True)
+            if title and len(title) > 5:
+                return title
+    
+    return 'Prodotto Amazon'
+
+def extract_price(soup) -> str:
+    """Extract price with multiple selectors"""
+    price_selectors = [
+        {'class': 'a-price-whole'},
+        {'class': 'a-price-fraction'},
+        {'id': 'priceblock_dealprice'},
+        {'id': 'priceblock_ourprice'},
+        {'class': 'a-price'},
+    ]
+    
+    for selector in price_selectors:
+        price_elem = soup.find('span', selector)
+        if price_elem:
+            price = price_elem.get_text(strip=True)
+            if price:
+                return price
+    
+    return None
+
+def extract_rating(soup) -> tuple:
+    """Extract rating and review count"""
+    rating = None
+    reviews = None
+    
+    # Try to find rating
+    rating_selectors = [
+        {'class': 'a-star-small'},
+        {'class': 'a-star-medium'},
+        {'class': 'a-star-large'},
+    ]
+    
+    for selector in rating_selectors:
+        rating_elem = soup.find('span', selector)
+        if rating_elem:
+            rating_text = rating_elem.find('span', {'class': 'a-icon-star'})
+            if rating_text:
+                rating = rating_text.get_text(strip=True).split()[0]
+                break
+    
+    # Try to find review count
+    reviews_elem = soup.find('span', {'id': 'acrCustomerReviewText'})
+    if reviews_elem:
+        reviews = reviews_elem.get_text(strip=True)
+    
+    return rating, reviews
+
+def extract_image(soup) -> str:
+    """Extract product image with multiple selectors"""
+    image_selectors = [
+        {'id': 'landingImage'},
+        {'id': 'imageBlockContainer'},
+        {'class': 'a-dynamic-image'},
+    ]
+    
+    for selector in image_selectors:
+        img_elem = soup.find('img', selector)
+        if img_elem:
+            image_url = img_elem.get('src')
+            if image_url:
+                return image_url
+    
+    return None
+
+def extract_description(soup) -> str:
+    """Extract product description"""
+    desc_elem = soup.find('div', {'id': 'feature-bullets'})
+    if desc_elem:
+        features = desc_elem.find_all('li')
+        if features:
+            description = features[0].get_text(strip=True)
+            if len(description) > 100:
+                description = description[:97] + "..."
+            return description
+    
+    # Try alternative selectors
+    desc_elem = soup.find('div', {'class': 'a-expander-content'})
+    if desc_elem:
+        description = desc_elem.get_text(strip=True)
+        if len(description) > 100:
+            description = description[:97] + "..."
+        return description
+    
+    return 'Scopri il prodotto su Amazon'
 
 # ============================================================================
 # Telegram Bot Functions
@@ -245,7 +336,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle URL messages"""
-    url = update.message.text
+    original_url = update.message.text
     user = update.message.from_user
     
     # Acknowledge message
@@ -255,34 +346,35 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     
     try:
         # Check if URL is Amazon (or short link)
-        if not is_amazon_url(url):
+        if not is_amazon_url(original_url):
             await status_msg.edit_text(
                 "❌ Questo non è un link Amazon!\n\n"
                 "Invia un link di Amazon.it e farò il resto."
             )
             return
         
-        logger.info(f"Received URL from {user.username}: {url}")
+        logger.info(f"Received URL from {user.username}: {original_url}")
         
-        # Resolve short URLs (amzn.eu, etc)
+        # STEP 1: Resolve short URLs (amzn.eu, etc) FIRST
+        url = original_url
         if is_short_amazon_url(url):
             await status_msg.edit_text("🔗 Sto risolvendo il link accorciato...")
             url = await resolve_short_url(url)
             logger.info(f"Resolved to: {url}")
         
-        # Normalize URL (remove unnecessary parameters)
+        # STEP 2: Normalize URL (remove unnecessary parameters)
         normalized_url = normalize_amazon_url(url)
         logger.info(f"Normalized URL: {normalized_url}")
         
-        # Add affiliate tag to NORMALIZED URL
+        # STEP 3: Add affiliate tag to NORMALIZED URL
         affiliate_url = add_affiliate_tag(normalized_url, AFFILIATE_TAG)
         logger.info(f"Affiliate URL: {affiliate_url}")
         
-        # Get product info (uses normalized URL for scraping)
+        # STEP 4: Get product info (uses normalized URL for scraping)
         await status_msg.edit_text("📸 Scarico info prodotto...")
         product_info = await get_amazon_product_info(affiliate_url)
         
-        # Shorten with YOURLS (using normalized affiliate URL - this is KEY!)
+        # STEP 5: Shorten with YOURLS (using CLEAN normalized affiliate URL)
         await status_msg.edit_text("🔗 Sto accorciando il link...")
         short_url = await shorten_with_yourls(affiliate_url)
         
@@ -369,7 +461,7 @@ def is_amazon_url(url: str) -> bool:
         "amazon.it", "amazon.com", "amazon.co.uk", "amazon.de",
         "amazon.fr", "amazon.es", "amazon.ca", "amazon.in",
         "amazon.co.jp", "amazon.com.br",
-        "amzn.eu", "amzn.com", "amzn.to"  # Short URLs
+        "amzn.eu", "amzn.com", "amzn.to"
     ]
     
     try:
