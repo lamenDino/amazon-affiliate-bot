@@ -91,7 +91,7 @@ async def resolve_short_url(url: str) -> str:
             headers = {'User-Agent': user_agent}
             try:
                 async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                    response = await client.head(url, headers=headers, follow_redirects=True)
+                    response = await client.get(url, headers=headers, follow_redirects=True)
                     resolved_url = str(response.url)
                     logger.info(f"Resolved {url} to {resolved_url}")
                     return resolved_url
@@ -102,19 +102,36 @@ async def resolve_short_url(url: str) -> str:
         logger.error(f"Error resolving short URL: {e}")
         return url
 
+def extract_asin_from_url(url: str) -> str:
+    """Extract ASIN from any Amazon URL format"""
+    # Try /dp/ASIN format
+    match = re.search(r'/dp/([A-Z0-9]{10})', url)
+    if match:
+        return match.group(1)
+    
+    # Try /gp/product/ASIN format
+    match = re.search(r'/gp/product/([A-Z0-9]{10})', url)
+    if match:
+        return match.group(1)
+    
+    # Try amzn.eu/d/ASIN format (where ASIN is hex)
+    match = re.search(r'/d/([A-F0-9]+)', url)
+    if match:
+        return match.group(1)
+    
+    return None
+
 def normalize_amazon_url(url: str) -> str:
     """Normalize Amazon URL to remove unnecessary parameters"""
     try:
         parsed = urlparse(url)
         
-        # Extract ASIN from /dp/ or /gp/product/
-        asin_match = re.search(r'/(dp|gp/product)/([A-Z0-9]{10})', url)
+        # Extract ASIN
+        asin = extract_asin_from_url(url)
         
-        if asin_match:
-            asin = asin_match.group(2)
-            domain = parsed.netloc
-            # Rebuild URL with just domain and ASIN
-            normalized = f"https://{domain}/dp/{asin}/"
+        if asin:
+            # Rebuild URL using amazon.it domain
+            normalized = f"https://www.amazon.it/dp/{asin}/"
             logger.info(f"Normalized URL from {url} to {normalized}")
             return normalized
         
@@ -355,14 +372,14 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         logger.info(f"Received URL from {user.username}: {original_url}")
         
-        # STEP 1: Resolve short URLs (amzn.eu, etc) FIRST
+        # STEP 1: Resolve short URLs (amzn.eu, etc) FIRST - use GET not HEAD
         url = original_url
         if is_short_amazon_url(url):
             await status_msg.edit_text("🔗 Sto risolvendo il link accorciato...")
             url = await resolve_short_url(url)
             logger.info(f"Resolved to: {url}")
         
-        # STEP 2: Normalize URL (remove unnecessary parameters)
+        # STEP 2: Normalize URL (remove unnecessary parameters and convert to amazon.it)
         normalized_url = normalize_amazon_url(url)
         logger.info(f"Normalized URL: {normalized_url}")
         
