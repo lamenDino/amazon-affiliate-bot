@@ -216,7 +216,7 @@ async def get_amazon_product_info(url: str) -> dict:
                     # Extract description
                     description = extract_description(soup)
                     
-                    logger.info(f"Scraped - Title: {title}, Price: {price}, Rating: {rating}")
+                    logger.info(f"Scraped - Title: {title}, Price: {price}, Rating: {rating}, Image: {image_url}")
                     
                     # If we got at least title, success!
                     if title and title != 'Prodotto Amazon':
@@ -450,8 +450,21 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         except:
             pass
         
-        # Send only the final message with the short link
-        await update.message.chat.send_message(message, parse_mode='HTML')
+        # Send product with image if available
+        if product_info.get('image'):
+            try:
+                await update.message.chat.send_photo(
+                    photo=product_info['image'],
+                    caption=message,
+                    parse_mode='HTML'
+                )
+                logger.info(f"Sent photo with message")
+            except Exception as e:
+                logger.warning(f"Could not send photo: {e}, sending text only")
+                await update.message.chat.send_message(message, parse_mode='HTML')
+        else:
+            logger.info(f"No image found, sending text message only")
+            await update.message.chat.send_message(message, parse_mode='HTML')
         
     except Exception as e:
         logger.error(f"Error processing URL: {e}")
