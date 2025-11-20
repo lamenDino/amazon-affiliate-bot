@@ -81,6 +81,25 @@ def start_health_check_server():
     logger.info(f"Health check server started on port {PORT}")
 
 # ============================================================================
+# URL Extraction and Validation
+# ============================================================================
+
+def extract_amazon_url_from_text(text: str) -> str:
+    """Extract Amazon URL from text using regex"""
+    # Regex pattern for URLs
+    url_pattern = r'https?://[^\s\)\]]+'
+    urls = re.findall(url_pattern, text)
+    
+    for url in urls:
+        # Remove trailing brackets/parens if present
+        url = url.rstrip(')]')
+        if is_amazon_url(url):
+            logger.info(f"Extracted Amazon URL: {url}")
+            return url
+    
+    return None
+
+# ============================================================================
 # URL Normalization
 # ============================================================================
 
@@ -124,6 +143,10 @@ def extract_asin_from_url(url: str) -> str:
 def normalize_amazon_url(url: str) -> str:
     """Normalize Amazon URL to remove unnecessary parameters"""
     try:
+        # Remove trailing slash and query params FIRST
+        url = url.rstrip('/')
+        url = re.sub(r'\?.*', '', url)  # Remove everything after ?
+        
         parsed = urlparse(url)
         
         # Extract ASIN
@@ -158,7 +181,7 @@ async def get_amazon_product_info(url: str) -> dict:
                 headers = {
                     'User-Agent': user_agent,
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8',
                     'Accept-Encoding': 'gzip, deflate',
                     'Connection': 'keep-alive',
                     'Upgrade-Insecure-Requests': '1'
@@ -353,8 +376,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle URL messages"""
-    original_url = update.message.text
+    text = update.message.text
     user = update.message.from_user
+    
+    # Extract Amazon URL from text (might be in a list or with other text)
+    original_url = extract_amazon_url_from_text(text)
+    
+    if not original_url:
+        await update.message.reply_text(
+            "❌ Non ho trovato link Amazon nel tuo messaggio!\n\n"
+            "Invia un link di Amazon.it e farò il resto."
+        )
+        return
     
     # Acknowledge message
     status_msg = await update.message.reply_text(
@@ -362,14 +395,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
     
     try:
-        # Check if URL is Amazon (or short link)
-        if not is_amazon_url(original_url):
-            await status_msg.edit_text(
-                "❌ Questo non è un link Amazon!\n\n"
-                "Invia un link di Amazon.it e farò il resto."
-            )
-            return
-        
         logger.info(f"Received URL from {user.username}: {original_url}")
         
         # STEP 1: Resolve short URLs (amzn.eu, etc) FIRST
@@ -387,11 +412,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         affiliate_url = add_affiliate_tag(normalized_url, AFFILIATE_TAG)
         logger.info(f"Affiliate URL: {affiliate_url}")
         
-        # STEP 4: Get product info (uses normalized URL for scraping)
+        # STEP 4: Get product info (uses normalized URL WITHOUT tag for scraping)
         await status_msg.edit_text("📸 Scarico info prodotto...")
-        product_info = await get_amazon_product_info(affiliate_url)
+        product_info = await get_amazon_product_info(normalized_url)
         
-        # STEP 5: Shorten with YOURLS (using CLEAN normalized affiliate URL)
+        # STEP 5: Shorten with YOURLS (using POST method)
         await status_msg.edit_text("🔗 Sto accorciando il link...")
         short_url = await shorten_with_yourls(affiliate_url)
         
@@ -411,22 +436,17 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             username=user.username or user.first_name
         )
         
-        # Delete status message
+        # Delete status message (il messaggio precedente)
         await status_msg.delete()
         
-        # Send product with image if available
-        if product_info.get('image'):
-            try:
-                await update.message.reply_photo(
-                    photo=product_info['image'],
-                    caption=message,
-                    parse_mode='HTML'
-                )
-            except Exception as e:
-                logger.warning(f"Could not send image: {e}")
-                await update.message.reply_text(message, parse_mode='HTML')
-        else:
-            await update.message.reply_text(message, parse_mode='HTML')
+        # Delete original user message
+        try:
+            await update.message.delete()
+        except:
+            pass
+        
+        # Send only the final message with the short link
+        await update.message.chat.send_message(message, parse_mode='HTML')
         
     except Exception as e:
         logger.error(f"Error processing URL: {e}")
@@ -518,10 +538,10 @@ def add_affiliate_tag(url: str, tag: str) -> str:
     return affiliate_url
 
 async def shorten_with_yourls(url: str) -> str:
-    """Shorten URL using YOURLS API"""
+    """Shorten URL using YOURLS API - POST method"""
     try:
         api_url = f"{YOURLS_URL}/yourls-api.php"
-        params = {
+        data = {
             'signature': YOURLS_SIGNATURE,
             'action': 'shorturl',
             'format': 'json',
@@ -531,16 +551,29 @@ async def shorten_with_yourls(url: str) -> str:
         logger.info(f"Shortening URL: {url}")
         
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(api_url, params=params)
+            response = await client.post(api_url, data=data)
             response.raise_for_status()
             
-            data = response.json()
-            logger.info(f"YOURLS response: {data}")
+            result = response.json()
+            logger.info(f"YOURLS response: {result}")
             
-            if data.get('status') == 'success':
-                return data.get('shorturl')
+            # Check if status is success
+            if result.get('status') == 'success':
+                short_url = result.get('shorturl')
+                logger.info(f"Successfully shortened to: {short_url}")
+                return short_url
             else:
-                logger.error(f"YOURLS error: {data}")
+                # If it exists, try to get the existing short URL
+                if 'already exists' in result.get('message', ''):
+                    logger.info(f"URL already exists, attempting to retrieve existing short URL")
+                    # Try to extract the short URL from the url field
+                    if result.get('url', {}).get('url'):
+                        existing_short = result.get('url', {}).get('url')
+                        if existing_short.startswith('http'):
+                            logger.info(f"Found existing short URL: {existing_short}")
+                            return existing_short
+                
+                logger.error(f"YOURLS error: {result.get('message', 'Unknown error')}")
                 return None
                 
     except httpx.HTTPStatusError as e:
