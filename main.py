@@ -124,10 +124,6 @@ def extract_asin_from_url(url: str) -> str:
 def normalize_amazon_url(url: str) -> str:
     """Normalize Amazon URL to remove unnecessary parameters"""
     try:
-        # Remove trailing slash and query params FIRST
-        url = url.rstrip('/')
-        url = re.sub(r'\?.*', '', url)  # Remove everything after ?
-        
         parsed = urlparse(url)
         
         # Extract ASIN
@@ -162,7 +158,7 @@ async def get_amazon_product_info(url: str) -> dict:
                 headers = {
                     'User-Agent': user_agent,
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
                     'Accept-Encoding': 'gzip, deflate',
                     'Connection': 'keep-alive',
                     'Upgrade-Insecure-Requests': '1'
@@ -391,11 +387,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         affiliate_url = add_affiliate_tag(normalized_url, AFFILIATE_TAG)
         logger.info(f"Affiliate URL: {affiliate_url}")
         
-        # STEP 4: Get product info (uses normalized URL WITHOUT tag for scraping)
+        # STEP 4: Get product info (uses normalized URL for scraping)
         await status_msg.edit_text("📸 Scarico info prodotto...")
-        product_info = await get_amazon_product_info(normalized_url)
+        product_info = await get_amazon_product_info(affiliate_url)
         
-        # STEP 5: Shorten with YOURLS (using POST method)
+        # STEP 5: Shorten with YOURLS (using CLEAN normalized affiliate URL)
         await status_msg.edit_text("🔗 Sto accorciando il link...")
         short_url = await shorten_with_yourls(affiliate_url)
         
@@ -415,17 +411,22 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             username=user.username or user.first_name
         )
         
-        # Delete status message (il messaggio precedente)
+        # Delete status message
         await status_msg.delete()
         
-        # Delete original user message
-        try:
-            await update.message.delete()
-        except:
-            pass
-        
-        # Send only the final message with the short link
-        await update.message.chat.send_message(message, parse_mode='HTML')
+        # Send product with image if available
+        if product_info.get('image'):
+            try:
+                await update.message.reply_photo(
+                    photo=product_info['image'],
+                    caption=message,
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                logger.warning(f"Could not send image: {e}")
+                await update.message.reply_text(message, parse_mode='HTML')
+        else:
+            await update.message.reply_text(message, parse_mode='HTML')
         
     except Exception as e:
         logger.error(f"Error processing URL: {e}")
@@ -517,10 +518,10 @@ def add_affiliate_tag(url: str, tag: str) -> str:
     return affiliate_url
 
 async def shorten_with_yourls(url: str) -> str:
-    """Shorten URL using YOURLS API - POST method"""
+    """Shorten URL using YOURLS API"""
     try:
         api_url = f"{YOURLS_URL}/yourls-api.php"
-        data = {
+        params = {
             'signature': YOURLS_SIGNATURE,
             'action': 'shorturl',
             'format': 'json',
@@ -530,16 +531,16 @@ async def shorten_with_yourls(url: str) -> str:
         logger.info(f"Shortening URL: {url}")
         
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(api_url, data=data)
+            response = await client.get(api_url, params=params)
             response.raise_for_status()
             
-            result = response.json()
-            logger.info(f"YOURLS response: {result}")
+            data = response.json()
+            logger.info(f"YOURLS response: {data}")
             
-            if result.get('status') == 'success':
-                return result.get('shorturl')
+            if data.get('status') == 'success':
+                return data.get('shorturl')
             else:
-                logger.error(f"YOURLS error: {result}")
+                logger.error(f"YOURLS error: {data}")
                 return None
                 
     except httpx.HTTPStatusError as e:
