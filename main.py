@@ -124,6 +124,10 @@ def extract_asin_from_url(url: str) -> str:
 def normalize_amazon_url(url: str) -> str:
     """Normalize Amazon URL to remove unnecessary parameters"""
     try:
+        # Remove trailing slash and query params FIRST
+        url = url.rstrip('/')
+        url = re.sub(r'\?.*', '', url)  # Remove everything after ?
+        
         parsed = urlparse(url)
         
         # Extract ASIN
@@ -387,9 +391,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         affiliate_url = add_affiliate_tag(normalized_url, AFFILIATE_TAG)
         logger.info(f"Affiliate URL: {affiliate_url}")
         
-        # STEP 4: Get product info (uses normalized URL for scraping)
+        # STEP 4: Get product info (uses normalized URL WITHOUT tag for scraping)
         await status_msg.edit_text("📸 Scarico info prodotto...")
-        product_info = await get_amazon_product_info(affiliate_url)
+        product_info = await get_amazon_product_info(normalized_url)
         
         # STEP 5: Shorten with YOURLS (using CLEAN normalized affiliate URL)
         await status_msg.edit_text("🔗 Sto accorciando il link...")
