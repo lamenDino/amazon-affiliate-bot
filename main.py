@@ -594,13 +594,13 @@ async def shorten_with_yourls(url: str) -> str:
             else:
                 # If it exists, try to get the existing short URL
                 if 'already exists' in result.get('message', ''):
-                    logger.info(f"URL already exists, attempting to retrieve existing short URL")
-                    # Try to extract the short URL from the url field
-                    if result.get('url', {}).get('url'):
-                        existing_short = result.get('url', {}).get('url')
-                        if existing_short.startswith('http'):
-                            logger.info(f"Found existing short URL: {existing_short}")
-                            return existing_short
+                    logger.info(f"URL already exists in database")
+                    # Extract the keyword and build the short URL from nelloonrender
+                    keyword = result.get('url', {}).get('keyword')
+                    if keyword:
+                        short_url = f"{YOURLS_URL}/{keyword}"
+                        logger.info(f"Found existing short URL from database: {short_url}")
+                        return short_url
                 
                 logger.error(f"YOURLS error: {result.get('message', 'Unknown error')}")
                 return None
