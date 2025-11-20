@@ -2,6 +2,7 @@
 """
 Amazon Affiliate Bot for Telegram
 Shortens Amazon links and adds affiliate tags using YOURLS
+With beautiful product cards featuring images, ratings, and descriptions
 """
 
 import os
@@ -10,7 +11,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import re
 from urllib.parse import urlencode, parse_qs, urlparse
-from telegram import Update
+from telegram import Update, InputMediaPhoto
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -19,6 +20,7 @@ from telegram.ext import (
     ContextTypes,
 )
 import httpx
+from bs4 import BeautifulSoup
 
 # Configure logging
 logging.basicConfig(
@@ -70,6 +72,86 @@ def start_health_check_server():
     logger.info(f"Health check server started on port {PORT}")
 
 # ============================================================================
+# Amazon Product Scraping
+# ============================================================================
+
+async def get_amazon_product_info(url: str) -> dict:
+    """Scrape Amazon product information"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Extract title
+            title = None
+            title_elem = soup.find('span', {'id': 'productTitle'})
+            if title_elem:
+                title = title_elem.get_text(strip=True)
+            
+            # Extract price
+            price = None
+            price_elem = soup.find('span', {'class': 'a-price-whole'})
+            if price_elem:
+                price = price_elem.get_text(strip=True)
+            
+            # Extract rating
+            rating = None
+            rating_elem = soup.find('span', {'class': 'a-star-small'})
+            if rating_elem:
+                rating_text = rating_elem.find('span', {'class': 'a-icon-star-small'})
+                if rating_text:
+                    rating = rating_text.get_text(strip=True).split()[0]
+            
+            # Extract number of reviews
+            reviews_count = None
+            reviews_elem = soup.find('span', {'id': 'acrCustomerReviewText'})
+            if reviews_elem:
+                reviews_count = reviews_elem.get_text(strip=True)
+            
+            # Extract image
+            image_url = None
+            img_elem = soup.find('img', {'id': 'landingImage'})
+            if img_elem:
+                image_url = img_elem.get('src')
+            
+            # Extract description (first few lines from product description)
+            description = None
+            desc_elem = soup.find('div', {'id': 'feature-bullets'})
+            if desc_elem:
+                features = desc_elem.find_all('li')
+                if features:
+                    description = features[0].get_text(strip=True)
+                    # Limit to 100 characters
+                    if len(description) > 100:
+                        description = description[:97] + "..."
+            
+            return {
+                'title': title or 'Prodotto Amazon',
+                'price': price,
+                'rating': rating,
+                'reviews': reviews_count,
+                'image': image_url,
+                'description': description or 'Scopri il prodotto su Amazon'
+            }
+    
+    except Exception as e:
+        logger.error(f"Error scraping Amazon product: {e}")
+        return {
+            'title': 'Prodotto Amazon',
+            'price': None,
+            'rating': None,
+            'reviews': None,
+            'image': None,
+            'description': 'Scopri il prodotto su Amazon'
+        }
+
+# ============================================================================
 # Telegram Bot Functions
 # ============================================================================
 
@@ -78,8 +160,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome_message = (
         "👋 Ciao! Sono il tuo Bot per i Link Amazon con Affiliazione\n\n"
         "📝 Cosa faccio:\n"
-        "• Accorcia i link Amazon\n"
-        "• Aggiunge automaticamente il tag di affiliazione\n\n"
+        "• 📸 Scarico l'immagine del prodotto\n"
+        "• ⭐ Mostro valutazioni e recensioni\n"
+        "• 💬 Aggiungo una descrizione breve\n"
+        "• 🔗 Accorcio il link con tag affiliazione\n\n"
         "🚀 Basta inviare un link Amazon e io farò il resto!\n\n"
         f"💰 Tag affiliazione: `{AFFILIATE_TAG}`"
     )
@@ -88,6 +172,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle URL messages"""
     url = update.message.text
+    user = update.message.from_user
     
     # Acknowledge message
     status_msg = await update.message.reply_text(
@@ -103,13 +188,18 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )
             return
         
-        logger.info(f"Received URL: {url}")
+        logger.info(f"Received URL from {user.username}: {url}")
         
         # Add affiliate tag
         affiliate_url = add_affiliate_tag(url, AFFILIATE_TAG)
         logger.info(f"Affiliate URL: {affiliate_url}")
         
+        # Get product info
+        await status_msg.edit_text("📸 Scarico info prodotto...")
+        product_info = await get_amazon_product_info(affiliate_url)
+        
         # Shorten with YOURLS
+        await status_msg.edit_text("🔗 Sto accorciando il link...")
         short_url = await shorten_with_yourls(affiliate_url)
         
         if not short_url:
@@ -121,12 +211,29 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         logger.info(f"Successfully shortened to: {short_url}")
         
-        # Send result
-        response = (
-            "✅ Link di affiliazione creato:\n\n"
-            f"`{short_url}`"
+        # Build beautiful message
+        message = build_product_message(
+            product_info=product_info,
+            short_url=short_url,
+            username=user.username or user.first_name
         )
-        await status_msg.edit_text(response, parse_mode="Markdown")
+        
+        # Delete status message
+        await status_msg.delete()
+        
+        # Send product with image if available
+        if product_info.get('image'):
+            try:
+                await update.message.reply_photo(
+                    photo=product_info['image'],
+                    caption=message,
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                logger.warning(f"Could not send image: {e}")
+                await update.message.reply_text(message, parse_mode='HTML')
+        else:
+            await update.message.reply_text(message, parse_mode='HTML')
         
     except Exception as e:
         logger.error(f"Error processing URL: {e}")
@@ -134,6 +241,43 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "❌ Si è verificato un errore.\n"
             "Riprova più tardi."
         )
+
+def build_product_message(product_info: dict, short_url: str, username: str) -> str:
+    """Build a beautiful product message"""
+    
+    title = product_info.get('title', 'Prodotto Amazon')
+    # Truncate title if too long
+    if len(title) > 60:
+        title = title[:57] + "..."
+    
+    price = product_info.get('price', '')
+    rating = product_info.get('rating', '')
+    reviews = product_info.get('reviews', '')
+    description = product_info.get('description', '')
+    
+    # Build rating display
+    rating_display = ''
+    if rating:
+        rating_display = f"⭐ {rating}"
+        if reviews:
+            rating_display += f" ({reviews})"
+        rating_display += "\n"
+    
+    # Build price display
+    price_display = ''
+    if price:
+        price_display = f"💰 <b>{price}</b>\n"
+    
+    message = (
+        f"<b>👤 {username}</b> ha condiviso:\n\n"
+        f"<b>{title}</b>\n"
+        f"{price_display}"
+        f"{rating_display}"
+        f"📝 {description}\n\n"
+        f"🔗 <b><a href='{short_url}'>Clicca qui per acquistare</a></b>"
+    )
+    
+    return message
 
 def is_amazon_url(url: str) -> bool:
     """Check if URL is from Amazon"""
@@ -147,7 +291,7 @@ def is_amazon_url(url: str) -> bool:
         parsed = urlparse(url)
         domain = parsed.netloc.lower().replace("www.", "")
         
-        logger.info(f"URL domain check: {domain} - is_amazon: {any(d in domain for d in amazon_domains)}")
+        logger.info(f"URL domain check: {domain}")
         
         return any(d in domain for d in amazon_domains)
     except Exception as e:
@@ -176,7 +320,7 @@ async def shorten_with_yourls(url: str) -> str:
             'url': url
         }
         
-        logger.info(f"Shortening URL: {url} via {api_url}")
+        logger.info(f"Shortening URL via {api_url}")
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(api_url, params=params)
