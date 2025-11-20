@@ -270,15 +270,19 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             url = await resolve_short_url(url)
             logger.info(f"Resolved to: {url}")
         
-        # Add affiliate tag to original URL
-        affiliate_url = add_affiliate_tag(url, AFFILIATE_TAG)
+        # Normalize URL (remove unnecessary parameters)
+        normalized_url = normalize_amazon_url(url)
+        logger.info(f"Normalized URL: {normalized_url}")
+        
+        # Add affiliate tag to NORMALIZED URL
+        affiliate_url = add_affiliate_tag(normalized_url, AFFILIATE_TAG)
         logger.info(f"Affiliate URL: {affiliate_url}")
         
         # Get product info (uses normalized URL for scraping)
         await status_msg.edit_text("📸 Scarico info prodotto...")
         product_info = await get_amazon_product_info(affiliate_url)
         
-        # Shorten with YOURLS (using original affiliate URL)
+        # Shorten with YOURLS (using normalized affiliate URL - this is KEY!)
         await status_msg.edit_text("🔗 Sto accorciando il link...")
         short_url = await shorten_with_yourls(affiliate_url)
         
@@ -412,7 +416,7 @@ async def shorten_with_yourls(url: str) -> str:
             'url': url
         }
         
-        logger.info(f"Shortening URL via {api_url}")
+        logger.info(f"Shortening URL: {url}")
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(api_url, params=params)
