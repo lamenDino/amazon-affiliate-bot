@@ -72,41 +72,108 @@ def start_health_check_server():
     logger.info(f"Health check server started on port {PORT}")
 
 # ============================================================================
+# URL Normalization
+# ============================================================================
+
+async def resolve_short_url(url: str) -> str:
+    """Resolve shortened URLs (amzn.eu, etc) to full Amazon URL"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.head(url, headers=headers, follow_redirects=True)
+            resolved_url = str(response.url)
+            logger.info(f"Resolved {url} to {resolved_url}")
+            return resolved_url
+    except Exception as e:
+        logger.error(f"Error resolving short URL: {e}")
+        return url
+
+def normalize_amazon_url(url: str) -> str:
+    """Normalize Amazon URL to remove unnecessary parameters"""
+    try:
+        parsed = urlparse(url)
+        
+        # Extract ASIN from /dp/ or /gp/product/
+        asin_match = re.search(r'/(dp|gp/product)/([A-Z0-9]{10})', url)
+        
+        if asin_match:
+            asin = asin_match.group(2)
+            domain = parsed.netloc
+            # Rebuild URL with just domain and ASIN
+            normalized = f"https://{domain}/dp/{asin}/"
+            logger.info(f"Normalized URL from {url} to {normalized}")
+            return normalized
+        
+        return url
+    
+    except Exception as e:
+        logger.error(f"Error normalizing URL: {e}")
+        return url
+
+# ============================================================================
 # Amazon Product Scraping
 # ============================================================================
 
 async def get_amazon_product_info(url: str) -> dict:
     """Scrape Amazon product information"""
     try:
+        # Normalize URL first
+        normalized_url = normalize_amazon_url(url)
+        
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
+            response = await client.get(normalized_url, headers=headers)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Extract title
+            # Extract title - try multiple selectors
             title = None
-            title_elem = soup.find('span', {'id': 'productTitle'})
-            if title_elem:
-                title = title_elem.get_text(strip=True)
+            title_selectors = [
+                {'id': 'productTitle'},
+                {'class': 'a-size-large'},
+                {'class': 'product-title'}
+            ]
             
-            # Extract price
+            for selector in title_selectors:
+                title_elem = soup.find('span', selector)
+                if title_elem:
+                    title = title_elem.get_text(strip=True)
+                    break
+            
+            # Extract price - try multiple selectors
             price = None
-            price_elem = soup.find('span', {'class': 'a-price-whole'})
-            if price_elem:
-                price = price_elem.get_text(strip=True)
+            price_selectors = [
+                {'class': 'a-price-whole'},
+                {'class': 'a-price-fraction'},
+                {'id': 'priceblock_dealprice'},
+                {'id': 'priceblock_ourprice'}
+            ]
             
-            # Extract rating
+            for selector in price_selectors:
+                price_elem = soup.find('span', selector)
+                if price_elem:
+                    price = price_elem.get_text(strip=True)
+                    break
+            
+            # Extract rating - try multiple selectors
             rating = None
             rating_elem = soup.find('span', {'class': 'a-star-small'})
             if rating_elem:
                 rating_text = rating_elem.find('span', {'class': 'a-icon-star-small'})
                 if rating_text:
                     rating = rating_text.get_text(strip=True).split()[0]
+            
+            if not rating:
+                rating_elem = soup.find('i', {'class': 'a-icon-star-small'})
+                if rating_elem:
+                    rating = rating_elem.get_text(strip=True).split()[0]
             
             # Extract number of reviews
             reviews_count = None
@@ -120,6 +187,11 @@ async def get_amazon_product_info(url: str) -> dict:
             if img_elem:
                 image_url = img_elem.get('src')
             
+            if not image_url:
+                img_elem = soup.find('img', {'id': 'imageBlockContainer'})
+                if img_elem:
+                    image_url = img_elem.get('src')
+            
             # Extract description (first few lines from product description)
             description = None
             desc_elem = soup.find('div', {'id': 'feature-bullets'})
@@ -130,6 +202,8 @@ async def get_amazon_product_info(url: str) -> dict:
                     # Limit to 100 characters
                     if len(description) > 100:
                         description = description[:97] + "..."
+            
+            logger.info(f"Scraped - Title: {title}, Price: {price}, Rating: {rating}")
             
             return {
                 'title': title or 'Prodotto Amazon',
@@ -180,7 +254,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
     
     try:
-        # Check if URL is Amazon
+        # Check if URL is Amazon (or short link)
         if not is_amazon_url(url):
             await status_msg.edit_text(
                 "❌ Questo non è un link Amazon!\n\n"
@@ -190,15 +264,21 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         logger.info(f"Received URL from {user.username}: {url}")
         
-        # Add affiliate tag
+        # Resolve short URLs (amzn.eu, etc)
+        if is_short_amazon_url(url):
+            await status_msg.edit_text("🔗 Sto risolvendo il link accorciato...")
+            url = await resolve_short_url(url)
+            logger.info(f"Resolved to: {url}")
+        
+        # Add affiliate tag to original URL
         affiliate_url = add_affiliate_tag(url, AFFILIATE_TAG)
         logger.info(f"Affiliate URL: {affiliate_url}")
         
-        # Get product info
+        # Get product info (uses normalized URL for scraping)
         await status_msg.edit_text("📸 Scarico info prodotto...")
         product_info = await get_amazon_product_info(affiliate_url)
         
-        # Shorten with YOURLS
+        # Shorten with YOURLS (using original affiliate URL)
         await status_msg.edit_text("🔗 Sto accorciando il link...")
         short_url = await shorten_with_yourls(affiliate_url)
         
@@ -284,7 +364,8 @@ def is_amazon_url(url: str) -> bool:
     amazon_domains = [
         "amazon.it", "amazon.com", "amazon.co.uk", "amazon.de",
         "amazon.fr", "amazon.es", "amazon.ca", "amazon.in",
-        "amazon.co.jp", "amazon.com.br"
+        "amazon.co.jp", "amazon.com.br",
+        "amzn.eu", "amzn.com", "amzn.to"  # Short URLs
     ]
     
     try:
@@ -296,6 +377,17 @@ def is_amazon_url(url: str) -> bool:
         return any(d in domain for d in amazon_domains)
     except Exception as e:
         logger.error(f"Error checking URL domain: {e}")
+        return False
+
+def is_short_amazon_url(url: str) -> bool:
+    """Check if URL is a short Amazon URL"""
+    short_domains = ["amzn.eu", "amzn.com", "amzn.to"]
+    
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower().replace("www.", "")
+        return any(d in domain for d in short_domains)
+    except:
         return False
 
 def add_affiliate_tag(url: str, tag: str) -> str:
