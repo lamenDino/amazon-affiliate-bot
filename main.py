@@ -528,10 +528,10 @@ def add_affiliate_tag(url: str, tag: str) -> str:
     return affiliate_url
 
 async def shorten_with_yourls(url: str) -> str:
-    """Shorten URL using YOURLS API"""
+    """Shorten URL using YOURLS API - POST method"""
     try:
         api_url = f"{YOURLS_URL}/yourls-api.php"
-        params = {
+        data = {
             'signature': YOURLS_SIGNATURE,
             'action': 'shorturl',
             'format': 'json',
@@ -541,16 +541,16 @@ async def shorten_with_yourls(url: str) -> str:
         logger.info(f"Shortening URL: {url}")
         
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(api_url, params=params)
+            response = await client.post(api_url, data=data)
             response.raise_for_status()
             
-            data = response.json()
-            logger.info(f"YOURLS response: {data}")
+            result = response.json()
+            logger.info(f"YOURLS response: {result}")
             
-            if data.get('status') == 'success':
-                return data.get('shorturl')
+            if result.get('status') == 'success':
+                return result.get('shorturl')
             else:
-                logger.error(f"YOURLS error: {data}")
+                logger.error(f"YOURLS error: {result}")
                 return None
                 
     except httpx.HTTPStatusError as e:
