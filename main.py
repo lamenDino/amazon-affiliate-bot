@@ -131,7 +131,7 @@ def normalize_amazon_url(url: str) -> str:
         
         if asin:
             # Rebuild URL using amazon.it domain
-            normalized = f"https://www.amazon.it/dp/{asin}/"
+            normalized = f"https://www.amazon.it/dp/{asin}"
             logger.info(f"Normalized URL from {url} to {normalized}")
             return normalized
         
@@ -173,7 +173,7 @@ async def get_amazon_product_info(url: str) -> dict:
                     
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
-                    # Extract title - try multiple selectors
+                    # Extract title
                     title = extract_title(soup)
                     
                     # Extract price
@@ -190,7 +190,7 @@ async def get_amazon_product_info(url: str) -> dict:
                     
                     logger.info(f"Scraped - Title: {title}, Price: {price}, Rating: {rating}")
                     
-                    # If we got at least title and image, success!
+                    # If we got at least title, success!
                     if title and title != 'Prodotto Amazon':
                         return {
                             'title': title,
@@ -372,14 +372,14 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         logger.info(f"Received URL from {user.username}: {original_url}")
         
-        # STEP 1: Resolve short URLs (amzn.eu, etc) FIRST - use GET not HEAD
+        # STEP 1: Resolve short URLs (amzn.eu, etc) FIRST
         url = original_url
         if is_short_amazon_url(url):
             await status_msg.edit_text("🔗 Sto risolvendo il link accorciato...")
             url = await resolve_short_url(url)
             logger.info(f"Resolved to: {url}")
         
-        # STEP 2: Normalize URL (remove unnecessary parameters and convert to amazon.it)
+        # STEP 2: Normalize URL (remove unnecessary parameters)
         normalized_url = normalize_amazon_url(url)
         logger.info(f"Normalized URL: {normalized_url}")
         
@@ -505,6 +505,9 @@ def is_short_amazon_url(url: str) -> bool:
 
 def add_affiliate_tag(url: str, tag: str) -> str:
     """Add affiliate tag to Amazon URL"""
+    # Remove trailing slash FIRST
+    url = url.rstrip('/')
+    
     # Remove existing tag if present
     url = re.sub(r'[?&]tag=[^&]*', '', url)
     
