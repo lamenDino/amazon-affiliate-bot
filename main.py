@@ -1,287 +1,219 @@
 #!/usr/bin/env python3
 """
-Amazon Affiliate Link Bot for Telegram (Render Edition)
-Converts Amazon links to shortened affiliate links using YOURLS
-Optimized for deployment on Render
+Amazon Affiliate Bot for Telegram
+Shortens Amazon links and adds affiliate tags using YOURLS
 """
 
 import os
-import re
-import sys
 import logging
-import requests
-from urllib.parse import urlparse, parse_qs, urlunparse
-from dotenv import load_dotenv
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+import re
+from urllib.parse import urlencode, parse_qs, urlparse
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
+import httpx
 
-# Load environment variables
-load_dotenv()
-
-# Configuration
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-YOURLS_URL = os.getenv("YOURLS_URL", "http://localhost:8082")
-YOURLS_SIGNATURE = os.getenv("YOURLS_SIGNATURE")
-AFFILIATE_TAG = os.getenv("AFFILIATE_TAG", "ruciferia-21")
-
-# Setup logging
+# Configure logging
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
-    stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
 
+# Environment variables
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+YOURLS_URL = os.environ.get("YOURLS_URL", "https://url.nelloonrender.duckdns.org")
+YOURLS_SIGNATURE = os.environ.get("YOURLS_SIGNATURE", "def05e4247")
+AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "ruciferia-21")
+PORT = int(os.environ.get("PORT", 10000))
 
-def add_affiliate_tag_to_url(url: str, tag: str) -> str:
-    """
-    Add affiliate tag parameter to Amazon URL
-    Handles both new and old URL formats
-    """
+# Validate environment variables
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN not set in environment variables")
+
+logger.info(f"Bot Configuration:")
+logger.info(f"  TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:10]}...")
+logger.info(f"  YOURLS_URL: {YOURLS_URL}")
+logger.info(f"  YOURLS_SIGNATURE: {YOURLS_SIGNATURE}")
+logger.info(f"  AFFILIATE_TAG: {AFFILIATE_TAG}")
+logger.info(f"  PORT: {PORT}")
+
+# ============================================================================
+# Health Check HTTP Server (Required by Render)
+# ============================================================================
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Simple HTTP handler for Render's health checks"""
+    
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'Bot is running')
+    
+    def log_message(self, format, *args):
+        """Suppress default logging"""
+        pass
+
+def start_health_check_server():
+    """Start HTTP server for Render's health checks"""
+    server = HTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info(f"Health check server started on port {PORT}")
+
+# ============================================================================
+# Telegram Bot Functions
+# ============================================================================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /start command"""
+    welcome_message = (
+        "👋 Ciao! Sono il tuo Bot per i Link Amazon con Affiliazione\n\n"
+        "📝 Cosa faccio:\n"
+        "• Accorcia i link Amazon\n"
+        "• Aggiunge automaticamente il tag di affiliazione\n\n"
+        "🚀 Basta inviare un link Amazon e io farò il resto!\n\n"
+        f"💰 Tag affiliazione: `{AFFILIATE_TAG}`"
+    )
+    await update.message.reply_text(welcome_message)
+
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle URL messages"""
+    url = update.message.text
+    
+    # Acknowledge message
+    status_msg = await update.message.reply_text(
+        "⏳ Sto elaborando il link...",
+    )
+    
     try:
-        parsed_url = urlparse(url)
-        query_params = parse_qs(parsed_url.query, keep_blank_values=True)
+        # Check if URL is Amazon
+        if not is_amazon_url(url):
+            await status_msg.edit_text(
+                "❌ Questo non è un link Amazon!\n\n"
+                "Invia un link di Amazon.it e farò il resto."
+            )
+            return
         
-        # Remove existing tag if present
-        query_params.pop('tag', None)
-        query_params.pop('linkCode', None)
+        logger.info(f"Received URL: {url}")
         
-        # Add new affiliate tag
-        query_params['tag'] = [tag]
+        # Add affiliate tag
+        affiliate_url = add_affiliate_tag(url, AFFILIATE_TAG)
+        logger.info(f"Affiliate URL: {affiliate_url}")
         
-        # Rebuild query string (flatten the list values)
-        new_query = '&'.join(
-            f"{key}={value[0] if isinstance(value, list) else value}"
-            for key, value in query_params.items()
+        # Shorten with YOURLS
+        short_url = await shorten_with_yourls(affiliate_url)
+        
+        if not short_url:
+            await status_msg.edit_text(
+                "❌ Errore nell'accorciamento del link.\n"
+                "Riprova più tardi."
+            )
+            return
+        
+        logger.info(f"Successfully shortened to: {short_url}")
+        
+        # Send result
+        response = (
+            "✅ Link di affiliazione creato:\n\n"
+            f"`{short_url}`"
         )
+        await status_msg.edit_text(response, parse_mode="Markdown")
         
-        # Reconstruct URL
-        new_url = urlunparse((
-            parsed_url.scheme,
-            parsed_url.netloc,
-            parsed_url.path,
-            parsed_url.params,
-            new_query,
-            parsed_url.fragment
-        ))
-        
-        return new_url
     except Exception as e:
-        logger.error(f"Error adding affiliate tag: {e}")
-        return url
+        logger.error(f"Error processing URL: {e}")
+        await status_msg.edit_text(
+            "❌ Si è verificato un errore.\n"
+            "Riprova più tardi."
+        )
 
-
-def shorten_with_yourls(long_url: str, custom_alias: str = None) -> str:
-    """
-    Shorten a URL using YOURLS API
-    Optimized for Render with better error handling
-    """
-    try:
-        # YOURLS API endpoint
-        api_url = f"{YOURLS_URL}/yourls-api.php"
-        
-        # Prepare parameters
-        params = {
-            'signature': YOURLS_SIGNATURE,
-            'action': 'shorturl',
-            'format': 'json',
-            'url': long_url,
-        }
-        
-        if custom_alias:
-            params['keyword'] = custom_alias
-        
-        logger.info(f"Shortening URL: {long_url} via {api_url}")
-        
-        # Make request to YOURLS API with timeout
-        response = requests.get(api_url, params=params, timeout=30)
-        response.raise_for_status()
-        
-        data = response.json()
-        logger.info(f"YOURLS response: {data}")
-        
-        if data.get('status') == 'success':
-            short_url = data.get('shorturl')
-            logger.info(f"Successfully shortened to: {short_url}")
-            return short_url
-        else:
-            error_msg = data.get('message', 'Unknown error')
-            logger.error(f"YOURLS API error: {error_msg}")
-            return None
-            
-    except requests.exceptions.Timeout:
-        logger.error("Timeout connecting to YOURLS - service may be initializing")
-        return None
-    except requests.exceptions.ConnectionError as e:
-        logger.error(f"Connection error to YOURLS: {e}")
-        return None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request error: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error shortening URL: {e}")
-        return None
-
-
-def is_amazon_link(url: str) -> bool:
-    """
-    Check if the URL is an Amazon link
-    Supports all Amazon marketplaces worldwide
-    """
+def is_amazon_url(url: str) -> bool:
+    """Check if URL is from Amazon"""
     amazon_domains = [
-        'amazon.com', 'amazon.it', 'amazon.es', 'amazon.fr', 'amazon.de',
-        'amazon.co.uk', 'amazon.ca', 'amazon.co.jp', 'amazon.in', 'amazon.com.br',
-        'amazon.com.au', 'amazon.nl', 'amazon.se', 'amazon.pl', 'amazon.com.mx',
-        'amazon.ae', 'amazon.sg'
+        "amazon.it", "amazon.com", "amazon.co.uk", "amazon.de",
+        "amazon.fr", "amazon.es", "amazon.ca", "amazon.in",
+        "amazon.co.jp", "amazon.com.br"
     ]
     
     try:
         parsed = urlparse(url)
-        domain = parsed.netloc.replace('www.', '')
-        is_amazon = any(amazon_domain in domain for amazon_domain in amazon_domains)
-        logger.info(f"URL domain check: {domain} - is_amazon: {is_amazon}")
-        return is_amazon
+        domain = parsed.netloc.lower().replace("www.", "")
+        
+        logger.info(f"URL domain check: {domain} - is_amazon: {any(d in domain for d in amazon_domains)}")
+        
+        return any(d in domain for d in amazon_domains)
     except Exception as e:
-        logger.error(f"Error checking Amazon link: {e}")
+        logger.error(f"Error checking URL domain: {e}")
         return False
 
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Start command handler"""
-    welcome_text = """
-🔗 **Amazon Affiliate Link Bot**
-
-Invia un link Amazon e riceverai il link accorciato con il tuo tag di affiliazione!
-
-**Comandi:**
-/start - Mostra questo messaggio
-/help - Aiuto
-
-**Esempio:**
-Invia: `https://www.amazon.it/Smartphone-MediaTek-Dimensity-processore/dp/B0FHBS428L/`
-
-Riceverai il link accorciato con affiliazione! ✨
-    """
-    await update.message.reply_text(welcome_text, parse_mode='Markdown')
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Help command handler"""
-    help_text = """
-📖 **Aiuto**
-
-Questo bot trasforma i link Amazon in link di affiliazione accorciati.
-
-**Come usarlo:**
-1. Copia un link da Amazon
-2. Invialo al bot
-3. Riceverai un link accorciato con il tuo codice di affiliazione
-
-**Tag di affiliazione utilizzato:** `{}`
-
-**Formati supportati:**
-Amazon.it, Amazon.com, Amazon.es, Amazon.fr, Amazon.de, Amazon.co.uk, e molti altri!
-
-Per problemi, contatta lo sviluppatore.
-    """.format(AFFILIATE_TAG)
-    await update.message.reply_text(help_text, parse_mode='Markdown')
-
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle incoming messages - process Amazon links"""
-    text = update.message.text
-    logger.info(f"Received message: {text[:100]}")
+def add_affiliate_tag(url: str, tag: str) -> str:
+    """Add affiliate tag to Amazon URL"""
+    # Remove existing tag if present
+    url = re.sub(r'[?&]tag=[^&]*', '', url)
     
-    # Check if message contains a URL
-    url_pattern = r'https?://[^\s]+'
-    urls = re.findall(url_pattern, text)
+    # Add new tag
+    separator = '&' if '?' in url else '?'
+    affiliate_url = f"{url}{separator}tag={tag}"
     
-    if not urls:
-        await update.message.reply_text(
-            "❌ Non ho trovato alcun link nel messaggio.\n\n"
-            "Invia un link Amazon e riceverai il link di affiliazione accorciato!"
-        )
-        return
-    
-    # Process each URL found
-    for url in urls:
-        logger.info(f"Processing URL: {url}")
+    return affiliate_url
+
+async def shorten_with_yourls(url: str) -> str:
+    """Shorten URL using YOURLS API"""
+    try:
+        api_url = f"{YOURLS_URL}/yourls-api.php"
+        params = {
+            'signature': YOURLS_SIGNATURE,
+            'action': 'shorturl',
+            'format': 'json',
+            'url': url
+        }
         
-        if not is_amazon_link(url):
-            await update.message.reply_text(
-                f"❌ Questo non sembra un link Amazon:\n`{url}`",
-                parse_mode='Markdown'
-            )
-            continue
+        logger.info(f"Shortening URL: {url} via {api_url}")
         
-        # Show processing message
-        processing_msg = await update.message.reply_text("⏳ Sto elaborando il link...")
-        
-        try:
-            # Add affiliate tag
-            affiliate_url = add_affiliate_tag_to_url(url, AFFILIATE_TAG)
-            logger.info(f"Affiliate URL: {affiliate_url}")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(api_url, params=params)
+            response.raise_for_status()
             
-            # Shorten with YOURLS
-            short_url = shorten_with_yourls(affiliate_url)
+            data = response.json()
+            logger.info(f"YOURLS response: {data}")
             
-            if short_url:
-                # Format response as Markdown link
-                response = f"✅ Link di affiliazione creato:\n\n[{short_url}]({short_url})"
-                await processing_msg.edit_text(response, parse_mode='Markdown')
-                logger.info(f"Successfully shortened to: {short_url}")
+            if data.get('status') == 'success':
+                return data.get('shorturl')
             else:
-                await processing_msg.edit_text(
-                    "⚠️ Errore nella creazione del link accorciato.\n"
-                    "Verifica che YOURLS sia configurato correttamente.\n"
-                    "Prova di nuovo tra qualche secondo."
-                )
-                logger.error("Failed to shorten URL with YOURLS")
-        
-        except Exception as e:
-            logger.error(f"Error processing URL: {e}", exc_info=True)
-            await processing_msg.edit_text(
-                f"❌ Errore durante l'elaborazione:\n`{str(e)}`",
-                parse_mode='Markdown'
-            )
-
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle errors"""
-    logger.error(f"Update {update} caused error {context.error}", exc_info=True)
-
+                logger.error(f"YOURLS error: {data}")
+                return None
+                
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Request error: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error shortening URL: {e}")
+        return None
 
 def main():
-    """Start the bot"""
-    if not TELEGRAM_TOKEN:
-        logger.error("TELEGRAM_TOKEN not set in environment variables")
-        sys.exit(1)
+    """Main function to run the bot"""
     
-    if not YOURLS_SIGNATURE:
-        logger.error("YOURLS_SIGNATURE not set in environment variables")
-        sys.exit(1)
-    
-    logger.info("=" * 50)
-    logger.info("Starting Amazon Affiliate Bot")
-    logger.info(f"YOURLS URL: {YOURLS_URL}")
-    logger.info(f"Affiliate Tag: {AFFILIATE_TAG}")
-    logger.info("=" * 50)
+    # Start health check server
+    start_health_check_server()
     
     # Create application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Add handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     
-    # Add error handler
-    application.add_error_handler(error_handler)
-    
-    # Start the bot
-    logger.info("Bot is running and listening for messages...")
+    # Start bot
+    logger.info("Starting bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == '__main__':
     main()
