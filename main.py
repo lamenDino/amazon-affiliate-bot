@@ -143,9 +143,14 @@ def extract_asin_from_url(url: str) -> str:
 def normalize_amazon_url(url: str) -> str:
     """Normalize Amazon URL to remove unnecessary parameters"""
     try:
-        # Remove trailing slash and query params FIRST
+        # Remove trailing slash FIRST
         url = url.rstrip('/')
-        url = re.sub(r'\?.*', '', url)  # Remove everything after ?
+        
+        # Remove the ?& pattern that Amazon uses
+        url = url.replace('?&', '?')
+        
+        # Now remove all query params
+        url = re.sub(r'\?.*', '', url)
         
         parsed = urlparse(url)
         
@@ -153,7 +158,7 @@ def normalize_amazon_url(url: str) -> str:
         asin = extract_asin_from_url(url)
         
         if asin:
-            # Rebuild URL using amazon.it domain
+            # Rebuild URL using amazon.it domain - CLEAN and minimal
             normalized = f"https://www.amazon.it/dp/{asin}"
             logger.info(f"Normalized URL from {url} to {normalized}")
             return normalized
@@ -541,6 +546,10 @@ async def shorten_with_yourls(url: str) -> str:
     """Shorten URL using YOURLS API - POST method"""
     try:
         api_url = f"{YOURLS_URL}/yourls-api.php"
+        
+        # Clean URL: remove ?& pattern and ensure it's valid
+        url = url.replace('?&', '?')
+        
         data = {
             'signature': YOURLS_SIGNATURE,
             'action': 'shorturl',
@@ -552,9 +561,16 @@ async def shorten_with_yourls(url: str) -> str:
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(api_url, data=data)
-            response.raise_for_status()
             
-            result = response.json()
+            # DON'T use raise_for_status() - handle errors manually
+            logger.info(f"YOURLS HTTP Status: {response.status_code}")
+            
+            try:
+                result = response.json()
+            except:
+                logger.error(f"Failed to parse JSON from YOURLS response")
+                return None
+            
             logger.info(f"YOURLS response: {result}")
             
             # Check if status is success
@@ -576,9 +592,6 @@ async def shorten_with_yourls(url: str) -> str:
                 logger.error(f"YOURLS error: {result.get('message', 'Unknown error')}")
                 return None
                 
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Request error: {e}")
-        return None
     except Exception as e:
         logger.error(f"Error shortening URL: {e}")
         return None
