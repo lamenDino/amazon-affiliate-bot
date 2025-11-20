@@ -158,7 +158,7 @@ async def get_amazon_product_info(url: str) -> dict:
                 headers = {
                     'User-Agent': user_agent,
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Language': 'it-IT,it;q=0.9,en;q=0.8',
                     'Accept-Encoding': 'gzip, deflate',
                     'Connection': 'keep-alive',
                     'Upgrade-Insecure-Requests': '1'
@@ -414,19 +414,25 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         # Delete status message
         await status_msg.delete()
         
+        # Delete original user message
+        try:
+            await update.message.delete()
+        except:
+            pass
+        
         # Send product with image if available
         if product_info.get('image'):
             try:
-                await update.message.reply_photo(
+                await update.message.chat.send_photo(
                     photo=product_info['image'],
                     caption=message,
                     parse_mode='HTML'
                 )
             except Exception as e:
                 logger.warning(f"Could not send image: {e}")
-                await update.message.reply_text(message, parse_mode='HTML')
+                await update.message.chat.send_message(message, parse_mode='HTML')
         else:
-            await update.message.reply_text(message, parse_mode='HTML')
+            await update.message.chat.send_message(message, parse_mode='HTML')
         
     except Exception as e:
         logger.error(f"Error processing URL: {e}")
