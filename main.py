@@ -395,7 +395,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await status_msg.edit_text("📸 Scarico info prodotto...")
         product_info = await get_amazon_product_info(normalized_url)
         
-        # STEP 5: Shorten with YOURLS (using CLEAN normalized affiliate URL)
+        # STEP 5: Shorten with YOURLS (using POST method)
         await status_msg.edit_text("🔗 Sto accorciando il link...")
         short_url = await shorten_with_yourls(affiliate_url)
         
@@ -415,7 +415,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             username=user.username or user.first_name
         )
         
-        # Delete status message
+        # Delete status message (il messaggio precedente)
         await status_msg.delete()
         
         # Delete original user message
@@ -424,19 +424,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         except:
             pass
         
-        # Send product with image if available
-        if product_info.get('image'):
-            try:
-                await update.message.chat.send_photo(
-                    photo=product_info['image'],
-                    caption=message,
-                    parse_mode='HTML'
-                )
-            except Exception as e:
-                logger.warning(f"Could not send image: {e}")
-                await update.message.chat.send_message(message, parse_mode='HTML')
-        else:
-            await update.message.chat.send_message(message, parse_mode='HTML')
+        # Send only the final message with the short link
+        await update.message.chat.send_message(message, parse_mode='HTML')
         
     except Exception as e:
         logger.error(f"Error processing URL: {e}")
