@@ -302,10 +302,6 @@ def detect_seller_condition(url: str, soup) -> str:
             logger.info("Found aod=1 - USED items view")
             return "Usato - Venduto da terzo"
         
-        if 'Amazon Seconda mano' in soup.get_text():
-            logger.info("Found 'Amazon Seconda mano' in page - USED item")
-            return "Usato - Venduto da Amazon Seconda mano"
-        
         if not smid:
             logger.info("No SMID in URL - Sold by Amazon = NEW")
             return "Nuovo - Venduto da Amazon"
@@ -314,8 +310,20 @@ def detect_seller_condition(url: str, soup) -> str:
             logger.info(f"Official Amazon SMID: {smid} - NEW")
             return "Nuovo - Venduto da Amazon"
         
-        logger.info(f"Third party SMID: {smid} - USED")
-        return "Usato - Venduto da terzo"
+        seller_section = soup.find('div', {'id': 'merchant-info'})
+        if seller_section:
+            seller_text = seller_section.get_text(strip=True)
+            logger.info(f"Seller section text: {seller_text[:150]}")
+            if 'Amazon Seconda mano' in seller_text:
+                logger.info("Found 'Amazon Seconda mano' in seller section - USED")
+                return "Usato - Venduto da Amazon Seconda mano"
+        
+        if smid:
+            logger.info(f"Third party SMID: {smid} - USED")
+            return "Usato - Venduto da terzo"
+        
+        logger.info("Default: NEW")
+        return "Nuovo - Venduto da Amazon"
         
     except Exception as e:
         logger.error(f"Error detecting condition: {e}")
