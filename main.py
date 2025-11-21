@@ -296,40 +296,30 @@ def detect_seller_condition(url: str, soup) -> str:
         smid = query_params.get('smid', [''])[0]
         aod = query_params.get('aod', [''])[0]
         
-        logger.info(f"Detected SMID: {smid}, AOD: {aod}")
+        logger.info(f"Detected SMID: '{smid}', AOD: '{aod}'")
         
-        full_page_text = soup.get_text()
-        if 'Amazon Seconda mano' in full_page_text:
+        if aod == '1':
+            logger.info("Found aod=1 - USED items view")
+            return "Usato - Venduto da terzo"
+        
+        if 'Amazon Seconda mano' in soup.get_text():
             logger.info("Found 'Amazon Seconda mano' in page - USED item")
             return "Usato - Venduto da Amazon Seconda mano"
         
-        if aod == '1':
-            logger.info("Found aod=1 - USED items")
-            return "Usato - Venduto da terzo"
-        
-        seller_section = soup.find('div', {'id': 'merchant-info'})
-        if seller_section:
-            seller_text = seller_section.get_text()
-            logger.info(f"Seller section: {seller_text[:100]}")
-            if 'Amazon Seconda mano' in seller_text:
-                logger.info("Found 'Amazon Seconda mano' in seller")
-                return "Usato - Venduto da Amazon Seconda mano"
-        
-        if smid in ['A11IL2PNWYJU7H', 'AQKAJJZN6SNBQ']:
-            logger.info("Amazon official seller - NEW")
+        if not smid:
+            logger.info("No SMID in URL - Sold by Amazon = NEW")
             return "Nuovo - Venduto da Amazon"
         
-        if smid and smid not in ['A11IL2PNWYJU7H', 'AQKAJJZN6SNBQ']:
-            logger.info(f"Third party seller - USED")
-            return "Usato - Venduto da terzo"
+        if smid in ['A11IL2PNWYJU7H', 'AQKAJJZN6SNBQ']:
+            logger.info(f"Official Amazon SMID: {smid} - NEW")
+            return "Nuovo - Venduto da Amazon"
         
-        logger.info("No condition - assume NEW")
-        return "Nuovo - Venduto da Amazon"
+        logger.info(f"Third party SMID: {smid} - USED")
+        return "Usato - Venduto da terzo"
         
     except Exception as e:
         logger.error(f"Error detecting condition: {e}")
-    
-    return None
+        return "Nuovo - Venduto da Amazon"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome = (
