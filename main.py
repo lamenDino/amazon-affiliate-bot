@@ -379,7 +379,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         logger.info(f"Shortened to: {short_url}")
         
-        message = build_product_message(product_info, short_url)
+        message = build_product_message(product_info, short_url, user.first_name)
         await status_msg.delete()
         
         try:
@@ -397,7 +397,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 logger.info("Sent photo")
             except Exception as e:
                 logger.warning(f"Photo error: {e}")
-                fallback = f"<b>{product_info.get('title', 'Prodotto')}</b>\n\n<b><a href='{short_url}'>🔗 Acquista</a></b>"
+                fallback = f"<b>{product_info.get('title', 'Prodotto')}</b>\n\n<b><a href='{short_url}'>👉 Clicca qui per acquistare</a></b>"
                 try:
                     await update.message.chat.send_message(fallback, parse_mode='HTML')
                 except:
@@ -407,7 +407,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             try:
                 await update.message.chat.send_message(message, parse_mode='HTML')
             except:
-                fallback = f"<b>{product_info.get('title', 'Prodotto')}</b>\n\n<b><a href='{short_url}'>🔗 Acquista</a></b>"
+                fallback = f"<b>{product_info.get('title', 'Prodotto')}</b>\n\n<b><a href='{short_url}'>👉 Clicca qui per acquistare</a></b>"
                 await update.message.chat.send_message(fallback, parse_mode='HTML')
         
     except Exception as e:
@@ -417,33 +417,46 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         except:
             pass
 
-def build_product_message(product_info: dict, short_url: str) -> str:
+def build_product_message(product_info: dict, short_url: str, user_name: str = None) -> str:
     title = product_info.get('title', 'Prodotto Amazon')
-    if len(title) > 50:
-        title = title[:47] + "..."
-    
     price = product_info.get('price', '')
     rating = product_info.get('rating', '')
     condition = product_info.get('condition_status', '')
     promotion = product_info.get('promotion', '')
     coupon = product_info.get('coupon', '')
     
-    parts = [f"<b>{title}</b>"]
-    
+    clean_price = ''
     if price:
         clean_price = re.sub(r'€.*', '€', price).strip()
-        parts.append(f"💰 {clean_price}")
-    if rating:
-        parts.append(f"⭐ {rating}/5")
-    if condition:
-        parts.append(f"🔄 {condition}")
-    if promotion:
-        parts.append(f"🎉 {promotion}")
-    if coupon:
-        parts.append(f"🎟️ {coupon}")
     
-    msg = "\n".join(parts)
-    msg += f"\n\n<b><a href='{short_url}'>🔗 Acquista</a></b>"
+    rating_stars = ''
+    if rating:
+        try:
+            rating_float = float(rating.replace(',', '.'))
+            stars = int(rating_float)
+            rating_stars = '⭐' * stars
+        except:
+            rating_stars = f"⭐ {rating}/5"
+    
+    msg = ""
+    
+    if user_name:
+        msg += f"<b>👤 Chi ha condiviso:</b> {user_name}\n\n"
+    
+    msg += f"<b>📌 Nome articolo:</b>\n{title}\n\n"
+    msg += f"<b>🔄 Se usato o nuovo:</b> {condition if condition else 'N/D'}\n\n"
+    msg += f"<b>💰 Prezzo:</b> {clean_price if clean_price else 'N/D'}\n\n"
+    
+    if rating_stars:
+        msg += f"<b>⭐ Valutazione:</b> {rating_stars}\n\n"
+    
+    if promotion:
+        msg += f"<b>🎉 Promozione:</b> {promotion}\n\n"
+    
+    if coupon:
+        msg += f"<b>🎟️ Coupon:</b> {coupon}\n\n"
+    
+    msg += f"<b><a href='{short_url}'>👉 Clicca qui per acquistare</a></b>"
     
     return msg
 
