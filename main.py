@@ -141,7 +141,7 @@ def extract_asin_from_url(url: str) -> str:
     return None
 
 def normalize_amazon_url(url: str) -> str:
-    """Normalize Amazon URL to remove unnecessary parameters"""
+    """Normalize Amazon URL to remove unnecessary parameters but keep seller/condition info"""
     try:
         # Remove trailing slash FIRST
         url = url.rstrip('/')
@@ -149,17 +149,31 @@ def normalize_amazon_url(url: str) -> str:
         # Remove the ?& pattern that Amazon uses
         url = url.replace('?&', '?')
         
-        # Now remove all query params
-        url = re.sub(r'\?.*', '', url)
-        
-        parsed = urlparse(url)
-        
-        # Extract ASIN
+        # Extract ASIN BEFORE removing query params
         asin = extract_asin_from_url(url)
+        
+        # Extract and preserve important seller/condition parameters
+        parsed = urlparse(url)
+        query_params = parse_qs(parsed.query)
+        
+        # Keep important parameters that indicate condition/seller
+        preserved_params = {}
+        if 'smid' in query_params:
+            preserved_params['smid'] = query_params['smid'][0]
+        if 'condition' in query_params:
+            preserved_params['condition'] = query_params['condition'][0]
+        if 'psc' in query_params:
+            preserved_params['psc'] = query_params['psc'][0]
         
         if asin:
             # Rebuild URL using amazon.it domain - CLEAN and minimal
             normalized = f"https://www.amazon.it/dp/{asin}"
+            
+            # Add back preserved parameters
+            if preserved_params:
+                params_str = '&'.join([f"{k}={v}" for k, v in preserved_params.items()])
+                normalized = f"{normalized}?{params_str}"
+            
             logger.info(f"Normalized URL from {url} to {normalized}")
             return normalized
         
@@ -216,7 +230,11 @@ async def get_amazon_product_info(url: str) -> dict:
                     # Extract description
                     description = extract_description(soup)
                     
-                    logger.info(f"Scraped - Title: {title}, Price: {price}, Rating: {rating}, Reviews: {reviews_count}, Image: {image_url}")
+                    # Extract condition status (for used items)
+                    condition_status = extract_condition_status(soup)
+                    condition_details = extract_condition_details(soup)
+                    
+                    logger.info(f"Scraped - Title: {title}, Price: {price}, Condition: {condition_status}")
                     
                     # If we got at least title, success!
                     if title and title != 'Prodotto Amazon':
@@ -226,7 +244,9 @@ async def get_amazon_product_info(url: str) -> dict:
                             'rating': rating,
                             'reviews': reviews_count,
                             'image': image_url,
-                            'description': description or 'Scopri il prodotto su Amazon'
+                            'description': description or 'Scopri il prodotto su Amazon',
+                            'condition_status': condition_status,
+                            'condition_details': condition_details
                         }
                     
             except Exception as e:
@@ -241,7 +261,9 @@ async def get_amazon_product_info(url: str) -> dict:
             'rating': None,
             'reviews': None,
             'image': None,
-            'description': 'Scopri il prodotto su Amazon'
+            'description': 'Scopri il prodotto su Amazon',
+            'condition_status': None,
+            'condition_details': None
         }
     
     except Exception as e:
@@ -252,7 +274,9 @@ async def get_amazon_product_info(url: str) -> dict:
             'rating': None,
             'reviews': None,
             'image': None,
-            'description': 'Scopri il prodotto su Amazon'
+            'description': 'Scopri il prodotto su Amazon',
+            'condition_status': None,
+            'condition_details': None
         }
 
 def extract_title(soup) -> str:
@@ -378,6 +402,66 @@ def extract_description(soup) -> str:
     
     return 'Scopri il prodotto su Amazon'
 
+def extract_condition_status(soup) -> str:
+    """Extract condition status for used items (e.g., 'Usato - Ottime condizioni')"""
+    try:
+        # Look for condition text in various places
+        condition_selectors = [
+            ('span', {'class': re.compile(r'.*condition.*', re.I)}),
+            ('span', {'class': re.compile(r'.*used.*', re.I)}),
+        ]
+        
+        # Search for "Usato" or "Used" indicators
+        for elem in soup.find_all(['span', 'div']):
+            text = elem.get_text(strip=True)
+            if 'Usato' in text or 'Used' in text or 'Ricondizionato' in text:
+                # Check if it contains condition info like "Ottime condizioni"
+                if any(cond in text for cond in ['condizioni', 'Condition', 'stato', 'State']):
+                    logger.info(f"Found condition status: {text}")
+                    return text
+        
+        # Also check in seller info section
+        seller_elem = soup.find('div', {'id': 'merchant-info'})
+        if seller_elem:
+            seller_text = seller_elem.get_text()
+            if 'Warehouse' in seller_text or 'Ricondizionato' in seller_text:
+                # Extract condition details
+                match = re.search(r'(Usato|Used|Ricondizionato)[:\s]*(.*?)(?:\n|$)', seller_text)
+                if match:
+                    return match.group(0)
+    except:
+        pass
+    
+    return None
+
+def extract_condition_details(soup) -> str:
+    """Extract detailed condition information (wear, scratches, etc)"""
+    try:
+        # Look for condition details section
+        details = []
+        
+        # Search for common condition-related text patterns
+        for elem in soup.find_all(['p', 'li', 'div']):
+            text = elem.get_text(strip=True)
+            
+            # Check for wear/condition indicators
+            if any(indicator in text for indicator in [
+                'graffi', 'scratch', 'usura', 'wear', 'ammaccature', 'dent',
+                'macchia', 'stain', 'perfetto', 'perfect', 'ottimo', 'excellent',
+                'buono', 'good', 'medio', 'fair', 'minimo', 'minimal'
+            ]):
+                if len(text) > 10 and len(text) < 200:  # Reasonable length
+                    details.append(text)
+        
+        # Return first detailed condition found
+        if details:
+            logger.info(f"Found condition details: {details[0]}")
+            return details[0]
+    except:
+        pass
+    
+    return None
+
 # ============================================================================
 # Telegram Bot Functions
 # ============================================================================
@@ -390,7 +474,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• 📸 Scarico l'immagine del prodotto\n"
         "• ⭐ Mostro valutazioni e recensioni\n"
         "• 💬 Aggiungo una descrizione breve\n"
-        "• 🔗 Accorcio il link con tag affiliazione\n\n"
+        "• 🔗 Accorcio il link con tag affiliazione\n"
+        "• 🔄 Rilevo articoli usati e condizioni\n\n"
         "🚀 Basta inviare un link Amazon e io farò il resto!\n\n"
         f"💰 Tag affiliazione: `{AFFILIATE_TAG}`"
     )
@@ -500,6 +585,8 @@ def build_product_message(product_info: dict, short_url: str, username: str) -> 
     rating = product_info.get('rating', '')
     reviews = product_info.get('reviews', '')
     description = product_info.get('description', '')
+    condition_status = product_info.get('condition_status', '')
+    condition_details = product_info.get('condition_details', '')
     
     # Build rating display with star emoji
     rating_display = ''
@@ -514,6 +601,13 @@ def build_product_message(product_info: dict, short_url: str, username: str) -> 
     if price:
         price_display = f"💰 <b>Prezzo: {price}€</b>\n"
     
+    # Build condition display for used items
+    condition_display = ''
+    if condition_status:
+        condition_display = f"🔄 <b>{condition_status}</b>\n"
+        if condition_details:
+            condition_display += f"   <i>{condition_details}</i>\n"
+    
     # Build description
     desc_display = ''
     if description and description != 'Scopri il prodotto su Amazon':
@@ -524,6 +618,7 @@ def build_product_message(product_info: dict, short_url: str, username: str) -> 
         f"<b>🛍️ {title}</b>\n\n"
         f"{price_display}"
         f"{rating_display}"
+        f"{condition_display}"
         f"{desc_display}"
         f"<b><a href='{short_url}'>🔗 Clicca qui per acquistare</a></b>"
     )
