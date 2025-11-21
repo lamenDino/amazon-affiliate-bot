@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Amazon Affiliate Bot for Telegram
-Shortens Amazon links and adds affiliate tags using YOURLS
 """
 
 import os
@@ -265,22 +264,53 @@ def detect_seller_condition(url: str, soup) -> str:
         
         logger.info(f"Detected SMID: {smid}, AOD: {aod}")
         
+        # Check AOD parameter FIRST
         if aod == '1':
             logger.info("Found aod=1 - USED items")
             return "Usato - Venduto da terzo"
         
-        page_text = soup.get_text()
-        if 'Amazon Seconda mano' in page_text:
-            logger.info("Found 'Amazon Seconda mano'")
-            return "Usato - Venduto da Amazon Seconda mano"
-        
+        # Check SMID BEFORE searching full page
         if smid in ['A11IL2PNWYJU7H', 'AQKAJJZN6SNBQ']:
-            logger.info("Amazon official seller")
+            logger.info("Amazon official seller - NEW")
             return "Nuovo - Venduto da Amazon"
         
+        # Now search for "Amazon Seconda mano" ONLY in seller section (not full page)
+        # Look specifically in the buyer info section
+        seller_section = soup.find('div', {'id': 'merchant-info'})
+        if seller_section:
+            seller_text = seller_section.get_text()
+            logger.info(f"Seller section found: {seller_text[:100]}")
+            if 'Amazon Seconda mano' in seller_text:
+                logger.info("Found 'Amazon Seconda mano' in seller section")
+                return "Usato - Venduto da Amazon Seconda mano"
+        
+        # Also check the "Sold by" section specifically
+        sold_by = soup.find('div', {'id': 'tabular-buybox-container'})
+        if sold_by:
+            sold_text = sold_by.get_text()
+            logger.info(f"Sold by section: {sold_text[:100]}")
+            if 'Amazon Seconda mano' in sold_text:
+                logger.info("Found 'Amazon Seconda mano' in sold by section")
+                return "Usato - Venduto da Amazon Seconda mano"
+        
+        # Search in offers section only
+        offers = soup.find('div', {'id': 'aod-offer-list'})
+        if offers:
+            offers_text = offers.get_text()
+            logger.info(f"Offers section: {offers_text[:100]}")
+            if 'Amazon Seconda mano' in offers_text:
+                logger.info("Found 'Amazon Seconda mano' in offers section")
+                return "Usato - Venduto da Amazon Seconda mano"
+        
+        # If SMID is set but not official Amazon, it's third party
         if smid and smid not in ['A11IL2PNWYJU7H', 'AQKAJJZN6SNBQ']:
-            logger.info("Third party seller")
+            logger.info(f"Third party seller with SMID: {smid}")
             return "Usato - Venduto da terzo"
+        
+        # Default: if no seller info found, assume new
+        logger.info("No condition info found - assuming NEW")
+        return "Nuovo - Venduto da Amazon"
+        
     except Exception as e:
         logger.error(f"Error detecting condition: {e}")
     
