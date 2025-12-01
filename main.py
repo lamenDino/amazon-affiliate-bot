@@ -437,7 +437,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             try:
                 await update.message.chat.send_message(message, parse_mode='HTML')
             except:
-                fallback = f"<b>{product_info.get('title', 'Prodotto')}</b>\n\n<b><a href='{short_url}'>🛒 ACQUISTA ORA</a></b>"
+                fallback = f"<b>{product_info.get('title', 'Prodotto')}</b>\n\n{short_url}"
                 await update.message.chat.send_message(fallback, parse_mode='HTML')
         
     except Exception as e:
