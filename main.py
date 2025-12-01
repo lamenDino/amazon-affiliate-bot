@@ -427,7 +427,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 logger.info("Sent photo")
             except Exception as e:
                 logger.warning(f"Photo error: {e}")
-                fallback = f"<b>{product_info.get('title', 'Prodotto')}</b>\n\n<b><a href='{short_url}'>🛒 ACQUISTA ORA</a></b>"
+                fallback = f"<b>{product_info.get('title', 'Prodotto')}</b>\n\n{short_url}"
                 try:
                     await update.message.chat.send_message(fallback, parse_mode='HTML')
                 except:
