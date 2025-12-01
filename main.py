@@ -523,7 +523,7 @@ def build_product_message(product_info: dict, short_url: str, user_name: str = N
     if coupon:
         msg += f"<b>🎟️ Coupon:</b>\n<i>{coupon}</i>\n"
     
-    msg += f"\n<b><a href='{short_url}'>🛒 ACQUISTA ORA</a></b>"
+    msg += f"\n{short_url}"
     
     return msg
 
