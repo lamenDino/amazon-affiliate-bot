@@ -546,10 +546,17 @@ def is_short_amazon_url(url: str) -> bool:
         return False
 
 def add_affiliate_tag(url: str, tag: str) -> str:
-    url = url.rstrip('/')
     url = re.sub(r'[?&]tag=[^&]*', '', url)
-    separator = '&' if '?' in url else '?'
-    return f"{url}{separator}tag={tag}"
+    # Ensure slash before query params
+    if '?' in url:
+        parts = url.split('?', 1)
+        url = parts[0].rstrip('/') + '/?'
+        if len(parts) > 1 and parts[1]:
+            url += parts[1] + '&'
+        return f"{url}tag={tag}"
+    else:
+        url = url.rstrip('/') + '/?'
+        return f"{url}tag={tag}"
 
 async def shorten_with_yourls(url: str) -> str:
     try:
